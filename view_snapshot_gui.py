@@ -3,6 +3,7 @@ from PyQt5.QtGui import QPixmap
 import pyxnat as xnat
 import argparse
 import requests
+import tempfile
 import urllib3
 import glob
 import time
@@ -68,17 +69,28 @@ class XNATLogin(QtWidgets.QDialog):
         Check whether the provided url and credential are functional
         :return:
         """
+        # remove the trailing '/' if needed
+        if self.textServer.text().endswith('/'):
+            self.textServer.setText(self.textServer.text()[:-1])
+        anonymous = False
+        if self.textUser.text() == '':
+            anonymous = True
         self.interface = xnat.Interface(server=self.textServer.text(),
                                         user=self.textUser.text(),
                                         password=self.textPass.text(),
-                                        verify=False)
+                                        verify=False,
+                                        anonymous=anonymous)
         try:
-            self.interface.manage.schemas.add('schemas/xnat.xsd')
             self.interface._exec('/data/JSESSION', method='DELETE')
         except:
             QtWidgets.QMessageBox.warning(
                 self, 'Error', 'Unable to connect to XNAT')
         else:
+            try:
+                self.interface.manage.schemas.add('schemas/xnat.xsd')
+            except:
+                QtWidgets.QMessageBox.warning(
+                    self, 'Error', 'Unable to download the XNAT schemas')
             self.accept()
             self.interface.disconnect()
 
@@ -174,7 +186,7 @@ class XNATSelectProjectPatient(QtWidgets.QDialog):
         return self.boxSubject.currentText()
 
 
-class DataEntryWindow(QtWidgets.QDialog):
+class ScanDisplayAndSaveWindow(QtWidgets.QDialog):
     """
     Dialog to display snapshot for selected scan
     """
@@ -182,7 +194,8 @@ class DataEntryWindow(QtWidgets.QDialog):
                  parent=None,
                  interface=None,
                  project=None,
-                 subject=None):
+                 subject=None,
+                 output_path=''):
         """
         Main dialog to select and display scan snapshots
         :param parent:
@@ -190,18 +203,23 @@ class DataEntryWindow(QtWidgets.QDialog):
         :param project: string containing the xnat project id
         :param subject: string containing the xnat subject id
         """
-        super(DataEntryWindow, self).__init__(parent)
+        super(ScanDisplayAndSaveWindow, self).__init__(parent)
         # Retrieve a list of all xnat:mrSessionData type
         all_mr_sessions = interface.inspect.field_values(
             'xnat:mrSessionData/SESSION_ID')
         self.intf = interface
         self.proj = project
         self.subj = subject
+        self.out = output_path
         # Extract a list of all experiments that are xnat:mrSessionData
         # for the selected subject
         experiment_ids = [e for e in self.intf.select.project(
             project).subject(subject).experiments().get()
                           if e in all_mr_sessions]
+        if len(experiment_ids) == 0:
+            QtWidgets.QMessageBox.warning(
+                self, 'Error', 'This patient does not have any mrSessionData')
+            self.close()
         # Store metadata information about all scans of all xnat:mrSessionData
         # into a dictionary
         self.mr_sessions = dict()
@@ -225,7 +243,8 @@ class DataEntryWindow(QtWidgets.QDialog):
                     'xnat:mrScanData/quality',
                     'xnat:mrScanData/type',
                 ])
-                self.mr_sessions[e][sc] = {'type': scan_type, 'quality': quality}
+                self.mr_sessions[e][sc] = {'type': scan_type,
+                                           'quality': quality}
 
         # Create dialogs to select the session and display related
         # information
@@ -249,7 +268,19 @@ class DataEntryWindow(QtWidgets.QDialog):
         self.imgSize = (400, 400)
         self.boxImage.setFixedSize(self.imgSize[0], self.imgSize[1])
 
-        # Create a buttom to close the window
+        promptType = QtWidgets.QLabel(self)
+        promptType.setText('Image file format to save')
+        self.boxType = QtWidgets.QComboBox(self)
+        self.boxType.currentIndexChanged.connect(self.updateDefaultFilename)
+
+        self.promptFilename = QtWidgets.QLabel(self)
+        self.textFilename = QtWidgets.QLineEdit(self)
+
+        # Create a button to save the file
+        buttonSave = QtWidgets.QPushButton('Save file', self)
+        buttonSave.clicked.connect(self.handleSave)
+
+        # Create a button to close the window
         buttonClose = QtWidgets.QPushButton('Close', self)
         buttonClose.clicked.connect(self.handleClose)
 
@@ -265,6 +296,12 @@ class DataEntryWindow(QtWidgets.QDialog):
         layout.addWidget(self.scanQuality)
         layout.addWidget(self.boxImage)
 
+        layout.addWidget(promptType)
+        layout.addWidget(self.boxType)
+        layout.addWidget(self.promptFilename)
+        layout.addWidget(self.textFilename)
+
+        layout.addWidget(buttonSave)
         layout.addWidget(buttonClose)
 
         self.updateScanList()
@@ -280,10 +317,35 @@ class DataEntryWindow(QtWidgets.QDialog):
         end = time.time()
         print('Time it took to submit ' + str(end - self.start) + ' second(s)')
         for session_id in self.mr_sessions.keys():
-            for f in glob.glob('/tmp/img_' + session_id + '_*.gif'):
+            for f in glob.glob(tempfile.gettempdir() + os.sep +
+                               'img_' + session_id + '_*.gif'):
                 os.remove(f)
         self.intf.disconnect()
         self.close()
+
+    def handleSave(self):
+        """
+
+        """
+        session_id = self.getCurrentSessionId()
+        scan_id = self.boxScan.currentText().split(' -')[0]
+        scan = self.intf.select.experiment(session_id).scan(scan_id)
+        if self.boxType.currentText() == 'NIFTI':
+            # Ensure the filename contain .gz suffix if the source is gzipped
+            filename = scan.resource('NIFTI').files('*.nii*')[0].label()
+            self.textFilename.text().strip('.gz')
+            self.textFilename.text().strip('.nii')
+            self.textFilename.setText(self.textFilename.text() + '.nii')
+            if '.nii.gz' in filename:
+                self.textFilename.setText(self.textFilename.text() + '.gz')
+            # Save the file
+            scan.resource('NIFTI').files('*.nii*')[0].get(
+                self.textFilename.text()
+            )
+        if self.boxType.currentText() == 'DICOM':
+            scan.resource('DICOM').get(
+                self.textFilename.text()
+            )
 
     def getCurrentSessionId(self):
         """
@@ -304,6 +366,8 @@ class DataEntryWindow(QtWidgets.QDialog):
         """
         self.boxScan.clear()
         session_id = self.getCurrentSessionId()
+        if session_id == '':
+            return
         for scan_id in self.mr_sessions[session_id]['scanIds']:
             self.boxScan.addItem(scan_id + ' - ' +
                                  self.mr_sessions[session_id][scan_id]['type'])
@@ -317,7 +381,8 @@ class DataEntryWindow(QtWidgets.QDialog):
         """
         session_id = self.getCurrentSessionId()
         scan_id = self.boxScan.currentText().split(' -')[0]
-        # The following statement ensures that no information is retrieve when the box is empty
+        # The following statement ensures that no information
+        # is retrieve when the box is empty
         # This occurs when the box is cleared to be updated.
         if scan_id == '':
             return
@@ -329,9 +394,26 @@ class DataEntryWindow(QtWidgets.QDialog):
                                  self.mr_sessions[
                                      session_id][scan_id]['quality'])
 
+        # # Check the available resources
+        self.boxType.clear()
+        scan = self.intf.select.experiment(session_id).scan(scan_id)
+        no_file = True
+        if scan.resource('NIFTI').exists():
+            no_file = False
+            self.boxType.addItem('NIFTI')
+        if scan.resource('DICOM').exists():
+            no_file = False
+            self.boxType.addItem('DICOM')
+        if no_file:
+            self.boxImage.clear()
+            QtWidgets.QMessageBox.warning(
+                self, 'Error', 'No Nifti or Dicom files for this scan')
+            return
+
         # Download locally the scan's snapshot if it has not been previously
         # downloaded
-        img_filename = '/tmp/img_' + session_id + '_' + scan_id + '.gif'
+        img_filename = tempfile.gettempdir() + os.sep +\
+                       'img_' + session_id + '_' + scan_id + '.gif'
         if not os.path.exists(img_filename):
             # Here used direclty the rest call as did not manage with pyxnat
             url = self.intf._server + '/xapi/experiments/' + session_id +\
@@ -339,14 +421,42 @@ class DataEntryWindow(QtWidgets.QDialog):
             print('Retrieve snapshot: ' + url)
             r = requests.get(url,
                              verify=False,
-                             auth=(self.intf._user, self.intf._pwd))
+                             auth=(self.intf._user,
+                                   self.intf._pwd))
             with open(img_filename, 'wb') as f:
                 f.write(r.content)
             r.close()
         # Display the snapshot
         pixmap = QPixmap(img_filename)
-        self.boxImage.setPixmap(pixmap.scaled(self.imgSize[0], self.imgSize[1],
-                                              QtCore.Qt.KeepAspectRatio))
+        if pixmap.isNull():
+            QtWidgets.QMessageBox.warning(
+                self, 'Error', 'Unable to retrieve snapshot. is XNAT v1.7.x?')
+        else:
+            self.boxImage.setPixmap(pixmap.scaled(self.imgSize[0],
+                                                  self.imgSize[1],
+                                                  QtCore.Qt.KeepAspectRatio))
+
+
+    def updateDefaultFilename(self):
+        """
+        Update the default filename based on selected image type
+        """
+        session_id = self.getCurrentSessionId()
+        scan_id = self.boxScan.currentText().split(' -')[0]
+        scan = self.intf.select.experiment(session_id).scan(scan_id)
+        if self.boxType.currentText() == 'NIFTI':
+            self.promptFilename.setText('Save the file as:')
+            filename = scan.resource('NIFTI').files('*.nii*')[0].label()
+            self.textFilename.setText(
+                self.out + os.sep + filename
+            )
+        if self.boxType.currentText() == 'DICOM':
+            self.promptFilename.setText(
+                'Save DICOM.zip in the following folder:')
+            self.textFilename.setText(
+                self.out
+            )
+
 
 if __name__ == '__main__':
 
@@ -364,8 +474,11 @@ if __name__ == '__main__':
                         help='Default XNAT password',
                         type=str,
                         default='')
+    parser.add_argument('-o', '--output-path',
+                        help='Default path to save files',
+                        type=str,
+                        default=tempfile.gettempdir())
     args = parser.parse_args()
-
 
     app = QtWidgets.QApplication(sys.argv)
 
@@ -381,10 +494,11 @@ if __name__ == '__main__':
         print('Project has been selected:' + xnat_project_subject.getproject())
         print('Subject has been selected:' + xnat_project_subject.getsubject())
 
-    window = DataEntryWindow(
+    window = ScanDisplayAndSaveWindow(
         interface=login.getinterface(),
         project=xnat_project_subject.getproject(),
-        subject=xnat_project_subject.getsubject()
+        subject=xnat_project_subject.getsubject(),
+        output_path=args.output_path
     )
     window.show()
     sys.exit(app.exec_())
