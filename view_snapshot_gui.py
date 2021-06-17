@@ -221,7 +221,9 @@ class ScanDisplayAndSaveWindow(QtWidgets.QDialog):
                 self, 'Error', 'This patient does not have any mrSessionData')
             self.close()
         # Store metadata information about all scans of all xnat:mrSessionData
-        # into a dictionary
+        # into a dictionary.
+        # This is too slow - could change for a requests call instead in order
+        # to fetch all scan information in one call instead.
         self.mr_sessions = dict()
         for e in experiment_ids:
             exp = interface.select.project(project).subject(
