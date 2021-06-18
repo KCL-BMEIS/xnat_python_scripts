@@ -221,32 +221,40 @@ class ScanDisplayAndSaveWindow(QtWidgets.QDialog):
                 self, 'Error', 'This patient does not have any mrSessionData')
             self.close()
         # Store metadata information about all scans of all xnat:mrSessionData
-        # into a dictionary.
-        # This is too slow - could change for a requests call instead in order
-        # to fetch all scan information in one call instead.
+        # into a dictionary. Moved to a requests call rather than pyxnat as to
+        # limit the number of rest call and thus gain time
         self.mr_sessions = dict()
+        reqSession = requests.session()
         for e in experiment_ids:
-            exp = interface.select.project(project).subject(
-                subject).experiment(e)
-            label, date = exp.attrs.mget([
-                'xnat:mrSessionData/label',
-                'xnat:mrSessionData/date',
-            ])
-            scan_ids = exp.scans().get()
-            if '99' in scan_ids:
-                scan_ids.remove('99')
+            url = self.intf._server + '/data/experiments/' + e + '?format=json'
+            r = reqSession.get(url,
+                               verify=False,
+                               auth=(self.intf._user,
+                                     self.intf._pwd))
+            exp_json = r.json()
+            # Extract some session information
+            label = exp_json['items'][0]['data_fields']['label']
+            date = exp_json['items'][0]['data_fields']['date']
+
             self.mr_sessions[e] = {'label': label,
-                              'date': date,
-                              'scanIds': scan_ids}
-            for sc in scan_ids:
-                quality, scan_type = interface.select.project(
-                    project).subject(
-                    subject).experiment(e).scan(sc).attrs.mget([
-                    'xnat:mrScanData/quality',
-                    'xnat:mrScanData/type',
-                ])
-                self.mr_sessions[e][sc] = {'type': scan_type,
-                                           'quality': quality}
+                                   'date': date,
+                                   'scanIds': []}
+
+            # Iterate through children to find the scans
+            for c in exp_json['items'][0]['children']:
+                if c['field'] == 'scans/scan':
+                    for s in c['items']:
+                        scan_quality = s['data_fields']['quality']
+                        scan_id = s['data_fields']['ID']
+                        scan_type = s['data_fields']['type']
+
+                        if not scan_id == '99':
+                            self.mr_sessions[e]['scanIds'].append(scan_id)
+                            self.mr_sessions[e][scan_id] = {
+                                'type': scan_type,
+                                'quality': scan_quality
+                            }
+        reqSession.close()
 
         # Create dialogs to select the session and display related
         # information
