@@ -1,12 +1,15 @@
 #
 from nipype.interfaces.fsl import Slicer
+from nipype.interfaces.fsl import SwapDimensions
 import xml.etree.ElementTree as ET
 import os.path as path
 import pyxnat as xnat
+from PIL import Image
 import tempfile
 import argparse
 import urllib3
 import glob
+import os
 
 urllib3.disable_warnings()
 
@@ -169,6 +172,13 @@ if __name__ == '__main__':
 
         # Create the subject on xnat if needed
         subject = project.subject(scan_info['subject_id'])
+        experiment = subject.experiment(scan_info['subject_id'] + '_' +
+                                        scan_info['session_id'])
+        scan = experiment.scan(str(scan_id[1:]))
+
+        if scan.exists():
+            continue
+
         if not subject.exists():
             print('Subject started ' + scan_info['subject_id'])
             subject.insert()
@@ -182,16 +192,12 @@ if __name__ == '__main__':
             })
             print('Subject created ' + scan_info['subject_id'])
 
-        experiment = subject.experiment(scan_info['subject_id'] + '_' +
-                                        scan_info['session_id'])
-
         # Create the experiment on xnat if needed
         if not experiment.exists():
             print('Session started ' +
                   scan_info['subject_id'] + '_' + scan_info['session_id'])
             experiment.insert(**{
                 'experiments': 'xnat:mrSessionData',
-                'ID': scan_info['subject_id'] + '_' + scan_info['session_id'],
                 'xnat:mrSessionData/date': scan_info['date'],
                 'xnat:mrSessionData/age': scan_info['age'],
                 'xnat:mrSessionData/acquisition_site': scan_info['site'],
@@ -203,7 +209,7 @@ if __name__ == '__main__':
                 'xnat:mrSessionData/modality': scan_info['modality'],
                 'xnat:mrSessionData/fieldStrength': scan_info['fieldStrength'],
                 'xnat:mrSessionData/coil': scan_info['coil'],
-                'xnat:mrSessionData/visit': scan_info['visittype']
+                'xnat:mrSessionData/session_type': scan_info['visittype'],
             })
             experiment.attrs.mset({
                 'xnat:mrSessionData/fields/field[name=visittype]/field':
@@ -223,14 +229,6 @@ if __name__ == '__main__':
             })
             print('Session created ' +
                   scan_info['subject_id'] + '_' + scan_info['session_id'])
-        else:
-            print(experiment.attrs.get('xnat:mrSessionData/session_type'))
-            for i in experiment.attrs():
-                print(i)
-            experiment.attrs.set('xnat:mrSessionData/session_type',
-                                 scan_info['visittype'])
-            print('Session amended ' +
-                  scan_info['subject_id'] + '_' + scan_info['session_id'])
 
         # Create the scan on xnat if needed
         scan = experiment.scan(str(scan_id[1:]))
@@ -241,7 +239,6 @@ if __name__ == '__main__':
                 'xnat:mrScanData/type': scan_info['type'],
                 'xnat:mrScanData/series_description':
                     scan_info['series_description'],
-                # scan_dict['xnat:mrScanData/quality'] = 'usable',
                 'xnat:mrScanData/scanner/manufacturer':
                     scan_info['manufacturer'],
                 'xnat:mrScanData/scanner/model': scan_info['scanner'],
@@ -273,6 +270,51 @@ if __name__ == '__main__':
             scan.resource('NIFTI').file(path.basename(scan_info_file[0])).put(
                 scan_info_file[0], 'XML')
             print('Data uploaded ' + scan_file)
+
+        # Create a snapshot
+
+        snap = scan.resource('SNAPSHOTS')
+        if not snap.exists():
+
+            filename_swap = tempfile.gettempdir() + os.sep + \
+                            scan_info['subject_id'] + '_' + \
+                            scan_info['session_id'] + '_' + \
+                            scan_id[1:] + '._s.nii.gz'
+            filename_snap = tempfile.gettempdir() + os.sep + \
+                            scan_info['subject_id'] + '_' + \
+                            scan_info['session_id'] + '_' + \
+                            scan_id[1:] + '.png'
+            filename_thumb = tempfile.gettempdir() + os.sep + \
+                             scan_info['subject_id'] + '_' + \
+                             scan_info['session_id'] + '_' + \
+                             scan_id[1:] + '_t.png'
+
+            swapdim = SwapDimensions(command='fsl5.0-fslswapdim')
+            slicer_snap = Slicer(command='fsl5.0-slicer')
+
+            try:
+                swapdim.inputs.new_dims = ('LR', 'PA', 'IS')
+                swapdim.inputs.in_file = scan_file
+                swapdim.inputs.out_file = filename_swap
+                swapdim.run()
+
+                slicer_snap.inputs.in_file = filename_swap
+                slicer_snap.inputs.out_file = filename_snap
+                slicer_snap.inputs.middle_slices = True
+                slicer_snap.run()
+
+                snap.file(path.basename(filename_snap)).put(
+                    filename_snap, 'PNG', 'ORIGINAL')
+                thumbnail = Image.open(filename_snap)
+                thumbnail.thumbnail((300, 300))
+                thumbnail.save(filename_thumb)
+                snap.file(path.basename(filename_thumb)).put(
+                    filename_thumb, 'PNG', 'THUMBNAIL')
+            except:
+                pass
+            os.remove(swapdim.inputs.out_file)
+            os.remove(filename_snap)
+            os.remove(filename_thumb)
 
     # Disconnect the xnat interface
     intf.disconnect()

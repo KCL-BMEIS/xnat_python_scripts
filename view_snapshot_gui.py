@@ -426,18 +426,23 @@ class ScanDisplayAndSaveWindow(QtWidgets.QDialog):
                        'img_' + session_id + '_' + scan_id + '.gif'
         if not os.path.exists(img_filename):
             # Here used direclty the rest call as did not manage with pyxnat
-            url = self.intf._server + '/xapi/experiments/' + session_id +\
-                  '/scan/' + scan_id + '/snapshot/3X3'
-            print('Retrieve snapshot: ' + url)
-            r = requests.get(url,
-                             verify=False,
-                             auth=(self.intf._user,
-                                   self.intf._pwd))
-            with open(img_filename, 'wb') as f:
-                f.write(r.content)
-            r.close()
-        # Display the snapshot
-        pixmap = QPixmap(img_filename)
+            url = [self.intf._server + '/xapi/experiments/' + session_id + \
+                   '/scan/' + scan_id + '/snapshot/3X3',
+                   self.intf._server + '/xapi/experiments/' + session_id + \
+                   '/scan/' + scan_id + '/snapshot']
+            for u in url:
+                print('Retrieve snapshot: ' + u)
+                r = requests.get(u,
+                                 verify=False,
+                                 auth=(self.intf._user,
+                                       self.intf._pwd))
+                with open(img_filename, 'wb') as f:
+                    f.write(r.content)
+                r.close()
+                # Display the snapshot
+                pixmap = QPixmap(img_filename)
+                if not pixmap.isNull():
+                    break
         if pixmap.isNull():
             QtWidgets.QMessageBox.warning(
                 self, 'Error', 'Unable to retrieve snapshot. is XNAT v1.7.x?')

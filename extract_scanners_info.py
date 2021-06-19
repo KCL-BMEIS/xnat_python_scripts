@@ -90,7 +90,11 @@ if __name__ == '__main__':
     siemens_number = [0, 0]
     ge_number = [0, 0]
     philips_number = [0, 0]
+    subject_list = []
     for i, r in baseline.iterrows():
+        if r['subject_id'] in subject_list:
+            continue
+        subject_list.append(r['subject_id'])
         site = r['session_id'].split('_')[0]
         strength = r['xnat_col_mrsessiondatafieldstrength']
         scanner = r['scanner'] + ' ' + strength
@@ -111,8 +115,8 @@ if __name__ == '__main__':
     print(scanner_types)
     print('Number of unique site = {}'.format(len(scanner_types.keys())))
     print('Number of scanner = {} ({}/{})'.format(sum(scanner_number),
-                                                         scanner_number[0],
-                                                         scanner_number[1]))
+                                                  scanner_number[0],
+                                                  scanner_number[1]))
     print('Total number of scans = {} ({}/{})'.format(sum(scan_number),
                                                       scan_number[0],
                                                       scan_number[1]))
